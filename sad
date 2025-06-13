@@ -17,6 +17,20 @@ if ! command -v rg &> /dev/null; then
   exit 1
 fi
 
+if ! command -v fzf &> /dev/null; then
+  echo "Error: 'fzf' is not installed. Please install it to use this script." >&2
+  echo "Install it from: https://github.com/junegunn/fzf" >&2
+  exit 1
+fi
+
+if ! command -v perl &> /dev/null; then
+  echo "Error: 'perl' is not installed. Please install it to use this script." >&2
+  echo "Most Unix-like systems have Perl pre-installed." >&2
+  echo "How the hell do you not have perl?" >&2
+  echo "Anyway, try https://www.perl.org maybe." >&2
+  exit 1
+fi
+
 #-------------------------------------------------------------------------------
 # Functions
 #-------------------------------------------------------------------------------
