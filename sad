@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+function usage {
+  exit_code="${1:-0}"
+  message="${2:-}"
+
+  if [ -n "$message" ]; then
+    echo "$message" >&2
+  fi
+
+  cat << EOF
+Usage: sad [OPTIONS] [QUERY]
+
+Search and replace text in files using PCRE-compatible regular expressions.
+
+Options:
+  -h, --help          Show this help message and exit
+  -y, --yes           Assume "yes" to all prompts (non-interactive mode)
+  -d, --dry-run       Show what would be changed without making any changes
+EOF
+
+  exit "$exit_code"
+}
+
+function split-input {
+  local input="$*"
+  local parts
+  local needle
+  local replace
+
+  # Split input on / into needle and replacement, unless preceded by a backslash
+  readarray -t parts < <(echo "$input" | perl -pe 's/(?<!\\)\/(?!$)/\n/g')
+
+  case "${#parts[@]}" in
+    0)
+      needle="."
+      replace=""
+      ;;
+
+    1)
+      needle="$input"
+      # shellcheck disable=SC2016
+      replace='$0'
+      ;;
+
+    2)
+      needle="${parts[0]}"
+      replace="${parts[1]}"
+      if [ -z "$replace" ]; then
+        # shellcheck disable=SC2016
+        replace='$0'
+      fi
+      ;;
+
+    *)
+      echo "Error: Too many slashes in input. Please use at most one slash to separate the regular expression and replacement pattern." >&2
+      return 1
+      ;;
+  esac
+
+  echo "$needle"
+  echo "$replace"
+}
+
+function status-line {
+  local interactive="$1"
+  shift
+  local dry_run="$1"
+  shift
+  local input="$*"
+  local needle
+  local replace
+  local parts
+
+  mapfile -t parts < <(split-input "$input")
+  needle="${parts[0]}"
+  replace="${parts[1]}"
+
+  echo "Interactive: $interactive | Dry run: $dry_run | Matching: $needle | Replacement: $replace"
+}
+
+function search {
+  local input="$*"
+  local needle
+  local replace
+  local parts
+
+  mapfile -t parts < <(split-input "$input")
+  needle="${parts[0]}"
+  replace="${parts[1]}"
+
+  rg -nP --line-buffered "$needle" -r "$replace" . || true
+}
+
+function replace {
+  local needle="$1"
+  local replace="$2"
+  local interactive="$3"
+  local dry_run="$4"
+  local file
+  local diff
+  local confirmed
+  local buffer
+  local -a updated=()
+  local -a skipped=()
+
+  {
+    echo "# Replacement plan"
+    echo "**Interactive:** \`$interactive\`"
+
+    echo "## Find"
+    echo '```regex'
+    echo "$needle"
+    echo '```'
+
+    echo "## Replace"
+    echo '```regex'
+    echo "$replace"
+    echo '```'
+
+    if [ "$dry_run" == true ]; then
+      echo "_...but not really. We're playing make believe._"
+    fi
+  } | gum format
+
+  for file in $(rg -lP --line-buffered "$needle" .); do
+    buffer=""
+    diff="$(perl -pe "s/$needle/$replace/g" "$file" | diff -u "$file" - || true)"
+
+    {
+      echo "-----"
+      echo "## $file"
+      echo '```diff'
+      echo "$diff"
+      echo '```'
+    } | gum format
+
+    if [ "$interactive" != false ]; then
+      confirmed="$(gum confirm "Apply changes to $file?")"
+    else
+      confirmed=true
+    fi
+
+    if [ "$confirmed" == true ]; then
+      if [ "$dry_run" == true ]; then
+        buffer+="~ _Let's just pretend that I updated ${file}_"
+      else
+        perl -pi -e "s/$needle/$replace/g" "$file"
+      fi
+
+      buffer+="\n✓ _Updated ${file}_"
+      updated+=("$file")
+    else
+      buffer+="\n✗ _Skipped ${file}_"
+      skipped+=("$file")
+    fi
+
+    echo -e "### Result\n$buffer" | gum format
+  done
+
+  {
+    echo "-----"
+    echo "# Summary"
+    echo "File updated: ${#updated[@]}"
+    echo "File skipped: ${#skipped[@]}"
+
+    echo "## Updated files"
+    if ((${#updated[@]} > 0)); then
+      for file in "${updated[@]}"; do
+        echo "- \`$file\`"
+      done
+    else
+      echo "_No files were updated._"
+    fi
+
+    echo "## Skipped files"
+    if ((${#skipped[@]} > 0)); then
+      for file in "${skipped[@]}"; do
+        echo "- \`$file\`"
+      done
+    else
+      echo "_No files were skipped._"
+    fi
+  } | gum format
+}
+
+#-------------------------------------------------------------------------------
+# Arg parsing
+#-------------------------------------------------------------------------------
+interactive=true
+dry_run=false
+
+while (($# > 0)); do
+  case "$1" in
+    -h | --help)
+      usage 0
+      ;;
+
+    -y | --yes)
+      interactive=false
+      shift
+      ;;
+
+    -d | --dry-run)
+      dry_run=true
+      shift
+      ;;
+  esac
+done
+
+#-------------------------------------------------------------------------------
+# Main
+#-------------------------------------------------------------------------------
+export -f split-input
+export -f status-line
+export -f search
+
+# shellcheck disable=SC2016
+query="$(
+  fzf \
+    --print-query \
+    --no-select-1 \
+    --phony \
+    --disabled \
+    --header 'Enter PCRE-compatible [needle]/[replacement]. Use $n for captured groups. Use backslash to escape literal slashes.' \
+    --info-command "status-line $interactive $dry_run '{q}'" \
+    --header-border bold \
+    --bind 'change:reload:search {q}'
+)"
+
+query="$(head -n 1 <<< "$query")"
+if [ -z "$query" ]; then
+  echo "Nothing to do." >&2
+  exit 0
+fi
+
+mapfile -t parts < <(split-input "$query")
+needle="${parts[0]}"
+replace="${parts[1]}"
+
+if [ -z "$needle" ]; then
+  echo "Error: No regular expression provided." >&2
+  exit 1
+fi
+
+if [ -z "$replace" ]; then
+  echo "Error: No replacement string provided." >&2
+  exit 1
+fi
+
+replace "$needle" "$replace" "$interactive" "$dry_run"
