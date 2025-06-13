@@ -65,23 +65,37 @@ EOF
 
 function split_input {
   local input="$*"
-  local parts
   local needle
   local replace
+  local flags
 
-  # Split on first unescaped /
-  IFS=$'\n' read -d '' -r needle replace <<< "$(perl -pe 's/(?<!\\)\//\n/' <<< "$input")" || true
+  # Split on first two unescaped slashes
+  IFS=$'\n' read -d '' -r needle replace flags <<< "$(
+    perl -pe '
+      # Replace first unescaped slash with newline
+      s/(?<!\\)\//\n/ or print "\n";
+      # Replace second unescaped slash with newline
+      s/(?<!\\)\//\n/ or print "\n";
+    ' <<< "$input"
+  )" || true
 
   if [[ -z "$needle" ]]; then
     needle="."
     replace=""
-  elif [[ -z "$replace" ]]; then
+  fi
+
+  if [[ -z "$replace" ]]; then
     # shellcheck disable=SC2016
     replace='$0'
   fi
 
+  if [[ -z "$flags" ]]; then
+    flags=""
+  fi
+
   echo "$needle"
   echo "$replace"
+  echo "$flags"
 }
 
 function status_line {
@@ -94,36 +108,46 @@ function status_line {
   local input="$*"
   local needle
   local replace
+  local flags
   local -a parts
 
   mapfile -t parts < <(split_input "$input")
   needle="${parts[0]}"
   replace="${parts[1]}"
+  flags="${parts[2]}"
 
-  echo "Interactive: $interactive | Dry run: $dry_run | Matching: $needle | Replacement: $replace"
+  echo "Interactive: $interactive | Dry run: $dry_run | Matching: $needle | Replacement: $replace | Flags: $flags"
 }
 
 function search {
   local input="$*"
   local needle
   local replace
-  local parts
+  local flags
+  local -a parts
 
   mapfile -t parts < <(split_input "$input")
   needle="${parts[0]}"
   replace="${parts[1]}"
+  flags="${parts[2]}"
 
   # Unescape slashes in replace
   replace="${replace//\\\//\/}"
 
-  rg -nP --line-buffered "$needle" -r "$replace" . || true
+  local -a rg_args=(-nP --line-buffered)
+  [[ "$flags" == *i* ]] && rg_args+=("--ignore-case")
+  [[ "$flags" == *m* ]] && rg_args+=("--multiline")
+  [[ "$flags" == *s* ]] && rg_args+=("--multiline-dotall")
+
+  rg "${rg_args[@]}" "$needle" -r "$replace" . || true
 }
 
 function replace {
   local needle="$1"
   local replace="$2"
-  local interactive="$3"
-  local dry_run="$4"
+  local flags="$3"
+  local interactive="$4"
+  local dry_run="$5"
   local file
   local diff
   local confirmed
@@ -131,28 +155,28 @@ function replace {
   local -a updated=()
   local -a skipped=()
 
+  local -a rg_args=(-lP --line-buffered)
+  [[ "$flags" == *i* ]] && rg_args+=("--ignore-case")
+  [[ "$flags" == *m* ]] && rg_args+=("--multiline")
+  [[ "$flags" == *s* ]] && rg_args+=("--multiline-dotall")
+
   {
     echo "# Replacement plan"
-    echo "**Interactive:** \`$interactive\`"
 
-    echo "## Find"
-    echo '```regex'
-    echo "$needle"
-    echo '```'
+    # shellcheck disable=SC2016
+    printf '**Interactive:** `%s`\n' "$interactive"
 
-    echo "## Replace"
-    echo '```regex'
-    echo "$replace"
-    echo '```'
+    # shellcheck disable=SC2016
+    printf '**Replace:** `s/%s/%s/%s`\n' "$needle" "$replace" "$flags"
 
     if [ "$dry_run" == true ]; then
-      echo "_...but not really. We're playing make believe._"
+      echo "_...but not really. We're just playing make believe._"
     fi
   } | gum format
 
-  for file in $(rg -lP --line-buffered "$needle" .); do
+  for file in $(rg "${rg_args[@]}" "$needle" .); do
     buffer=""
-    diff="$(perl -pe "s/$needle/$replace/g" "$file" | diff -u "$file" - || true)"
+    diff="$(perl -pe "s/$needle/$replace/$flags" "$file" | diff -u "$file" - || true)"
 
     {
       echo "-----"
@@ -172,7 +196,7 @@ function replace {
       if [ "$dry_run" == true ]; then
         buffer+="~ _Let's just pretend that I updated ${file}_"
       else
-        perl -pi -e "s/$needle/$replace/g" "$file"
+        perl -pi -e "s/$needle/$replace/$flags" "$file"
       fi
 
       buffer+="\n✓ _Updated ${file}_"
@@ -216,6 +240,7 @@ function replace {
 #-------------------------------------------------------------------------------
 interactive=true
 dry_run=false
+regex_flags=''
 
 while (($# > 0)); do
   case "$1" in
@@ -254,7 +279,7 @@ query="$(
     --no-select-1 \
     --phony \
     --disabled \
-    --header 'Enter PCRE-compatible [needle]/[replacement]. Use $n for captured groups. Use backslash to escape literal slashes.' \
+    --header 'Enter PCRE-compatible [needle]/[replacement]/[flags]. Use $n for captured groups. Use backslash to escape literal slashes.' \
     --info-command "status_line $interactive $dry_run '{q}'" \
     --header-border bold \
     --bind 'change:reload:search {q}'
@@ -269,6 +294,7 @@ fi
 mapfile -t parts < <(split_input "$query")
 needle="${parts[0]}"
 replace="${parts[1]}"
+flags="${parts[2]}"
 
 if [ -z "$needle" ]; then
   echo "Error: No regular expression provided." >&2
@@ -280,4 +306,4 @@ if [ -z "$replace" ]; then
   exit 1
 fi
 
-replace "$needle" "$replace" "$interactive" "$dry_run"
+replace "$needle" "$replace" "$flags" "$interactive" "$dry_run"
