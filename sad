@@ -2,6 +2,24 @@
 
 set -euo pipefail
 
+#-------------------------------------------------------------------------------
+# Check environment
+#-------------------------------------------------------------------------------
+if ! command -v gum &> /dev/null; then
+  echo "Error: 'gum' is not installed. Please install it to use this script." >&2
+  echo "Install it from: https://github.com/charmbracelet/gum" >&2
+  exit 1
+fi
+
+if ! command -v rg &> /dev/null; then
+  echo "Error: 'rg' (ripgrep) is not installed. Please install it to use this script." >&2
+  echo "Install it from: https://github.com/BurntSushi/ripgrep" >&2
+  exit 1
+fi
+
+#-------------------------------------------------------------------------------
+# Functions
+#-------------------------------------------------------------------------------
 function usage {
   exit_code="${1:-0}"
   message="${2:-}"
