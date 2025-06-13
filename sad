@@ -5,6 +5,13 @@ set -euo pipefail
 #-------------------------------------------------------------------------------
 # Check environment
 #-------------------------------------------------------------------------------
+if ((BASH_VERSINFO[0] < 4)); then
+  echo "Error: Bash 4.0 or higher is required." >&2
+  echo "If you don't have it, I'm guessing you are on MacOS. You can install it with Homebrew:" >&2
+  echo "  brew install bash" >&2
+  exit 1
+fi
+
 if ! command -v gum &> /dev/null; then
   echo "Error: 'gum' is not installed. Please install it to use this script." >&2
   echo "Install it from: https://github.com/charmbracelet/gum" >&2
@@ -43,7 +50,7 @@ function usage {
   fi
 
   cat << EOF
-Usage: sad [OPTIONS] [QUERY]
+Usage: sad [OPTIONS]
 
 Search and replace text in files using PCRE-compatible regular expressions.
 
@@ -56,57 +63,40 @@ EOF
   exit "$exit_code"
 }
 
-function split-input {
+function split_input {
   local input="$*"
   local parts
   local needle
   local replace
 
-  # Split input on / into needle and replacement, unless preceded by a backslash
-  readarray -t parts < <(echo "$input" | perl -pe 's/(?<!\\)\/(?!$)/\n/g')
+  # Split on first unescaped /
+  IFS=$'\n' read -d '' -r needle replace <<< "$(perl -pe 's/(?<!\\)\//\n/' <<< "$input")" || true
 
-  case "${#parts[@]}" in
-    0)
-      needle="."
-      replace=""
-      ;;
-
-    1)
-      needle="$input"
-      # shellcheck disable=SC2016
-      replace='$0'
-      ;;
-
-    2)
-      needle="${parts[0]}"
-      replace="${parts[1]}"
-      if [ -z "$replace" ]; then
-        # shellcheck disable=SC2016
-        replace='$0'
-      fi
-      ;;
-
-    *)
-      echo "Error: Too many slashes in input. Please use at most one slash to separate the regular expression and replacement pattern." >&2
-      return 1
-      ;;
-  esac
+  if [[ -z "$needle" ]]; then
+    needle="."
+    replace=""
+  elif [[ -z "$replace" ]]; then
+    # shellcheck disable=SC2016
+    replace='$0'
+  fi
 
   echo "$needle"
   echo "$replace"
 }
 
-function status-line {
+function status_line {
   local interactive="$1"
   shift
+
   local dry_run="$1"
   shift
+
   local input="$*"
   local needle
   local replace
-  local parts
+  local -a parts
 
-  mapfile -t parts < <(split-input "$input")
+  mapfile -t parts < <(split_input "$input")
   needle="${parts[0]}"
   replace="${parts[1]}"
 
@@ -119,9 +109,12 @@ function search {
   local replace
   local parts
 
-  mapfile -t parts < <(split-input "$input")
+  mapfile -t parts < <(split_input "$input")
   needle="${parts[0]}"
   replace="${parts[1]}"
+
+  # Unescape slashes in replace
+  replace="${replace//\\\//\/}"
 
   rg -nP --line-buffered "$needle" -r "$replace" . || true
 }
@@ -239,14 +232,19 @@ while (($# > 0)); do
       dry_run=true
       shift
       ;;
+
+    *)
+      echo "Error: Unknown option '$1'" >&2
+      usage 1
+      ;;
   esac
 done
 
 #-------------------------------------------------------------------------------
 # Main
 #-------------------------------------------------------------------------------
-export -f split-input
-export -f status-line
+export -f split_input
+export -f status_line
 export -f search
 
 # shellcheck disable=SC2016
@@ -257,7 +255,7 @@ query="$(
     --phony \
     --disabled \
     --header 'Enter PCRE-compatible [needle]/[replacement]. Use $n for captured groups. Use backslash to escape literal slashes.' \
-    --info-command "status-line $interactive $dry_run '{q}'" \
+    --info-command "status_line $interactive $dry_run '{q}'" \
     --header-border bold \
     --bind 'change:reload:search {q}'
 )"
@@ -268,7 +266,7 @@ if [ -z "$query" ]; then
   exit 0
 fi
 
-mapfile -t parts < <(split-input "$query")
+mapfile -t parts < <(split_input "$query")
 needle="${parts[0]}"
 replace="${parts[1]}"
 
